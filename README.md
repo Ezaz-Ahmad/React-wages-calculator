@@ -48,11 +48,4 @@ This project is a React translation of my earlier vanilla JS app — rebuilt wit
 
 ---
 
-## 🛠️ Tech Stack
 
-- [React 19](https://react.dev/) + [Vite](https://vite.dev/)
-- [pdf-lib](https://pdf-lib.js.org/) → PDF generation  
-- [LocalStorage](https://developer.mozilla.org/en-US/docs/Web/API/Window/localStorage) → client-side persistence  
-- CSS (custom animations + Poppins font)
-
----

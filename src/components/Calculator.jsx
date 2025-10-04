@@ -5,6 +5,17 @@ import ResultModal from "./ResultModal.jsx";
 import WaveOverlay from "./WaveOverlay.jsx";
 import { generatePdf } from "../utils/pdf.js";
 
+import { db } from "../lib/firebase";
+import { useAuth } from "../context/AuthContext";
+import {
+  doc,
+  setDoc,
+  onSnapshot,
+  addDoc,
+  collection,
+  serverTimestamp,
+} from "firebase/firestore";
+
 const initWageDetails = () =>
   days.map((day) => ({
     day,
@@ -12,61 +23,158 @@ const initWageDetails = () =>
     shifts: [{ startTime: null, endTime: null, location: "Gosford" }],
   }));
 
+const initForm = {
+  date: "",
+  employeeName: "",
+  employeeAddress: "",
+  weekdayRate: "",
+  weekendRate: "",
+  fuelCost: "",
+  others: "",
+  expenseExplanation: "",
+  taxAmount: "",
+  pouchDay: "",
+  pouchDate: "",
+  closingAmount: "",
+};
+
 export default function Calculator() {
+  const { user } = useAuth();
   const [wageDetails, setWageDetails] = useState(initWageDetails);
+  const [form, setForm] = useState(initForm);
   const [showOverlay, setShowOverlay] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
+  const [fatalError, setFatalError] = useState("");
   const formRef = useRef(null);
 
-  // Form state
-  const [form, setForm] = useState({
-    date: "",
-    employeeName: "",
-    employeeAddress: "",
-    weekdayRate: "",
-    weekendRate: "",
-    fuelCost: "",
-    others: "",
-    expenseExplanation: "",
-    taxAmount: "",
-    pouchDay: "",
-    pouchDate: "",
-    closingAmount: "",
-  });
+  // ---- hydrate-once + timestamps to avoid clobbering local typing ----
+  const hydratedRef = useRef(false);
+  const lastRemoteUpdatedAtRef = useRef(0);
+  const saveTimer = useRef(null);
 
-  // Restore from localStorage (shifts only) + backfill enabled flag
+  const stateDocRef = user ? doc(db, "users", user.uid, "state", "current") : null;
+
+  // Load (hydrate once), then stop overwriting local changes while typing
   useEffect(() => {
-    const saved = localStorage.getItem("wageDetails");
-    if (saved) {
-      const parsed = JSON.parse(saved).map((d) => ({
-        ...d,
-        enabled:
-          typeof d.enabled === "boolean"
-            ? d.enabled
-            : d.shifts?.some((s) => s.startTime || s.endTime) || false,
-        shifts:
-          d.shifts?.length
-            ? d.shifts
-            : [{ startTime: null, endTime: null, location: "Gosford" }],
-      }));
-      setWageDetails(parsed);
+    if (!stateDocRef || !user) return;
+    let unsub;
+
+    try {
+      unsub = onSnapshot(
+        stateDocRef,
+        async (snap) => {
+          if (!snap.exists()) {
+            await setDoc(stateDocRef, {
+              wageDetails: initWageDetails(),
+              form: initForm,
+              updatedAt: serverTimestamp(),
+            });
+            return;
+          }
+
+          const data = snap.data() || {};
+          const updatedAt = (data.updatedAt?.toMillis && data.updatedAt.toMillis()) || 0;
+
+          // Only hydrate the first time, OR if remote is newer than what we last saw
+          if (!hydratedRef.current || updatedAt > lastRemoteUpdatedAtRef.current) {
+            hydratedRef.current = true;
+            lastRemoteUpdatedAtRef.current = updatedAt;
+
+            setWageDetails(
+              (data.wageDetails && data.wageDetails.length
+                ? data.wageDetails
+                : initWageDetails()
+              ).map((d) => ({
+                ...d,
+                enabled:
+                  typeof d.enabled === "boolean"
+                    ? d.enabled
+                    : d.shifts?.some((s) => s.startTime || s.endTime) || false,
+                shifts:
+                  d.shifts?.length
+                    ? d.shifts
+                    : [{ startTime: null, endTime: null, location: "Gosford" }],
+              }))
+            );
+            setForm({ ...initForm, ...(data.form || {}) });
+            setFatalError("");
+          }
+        },
+        (err) => {
+          console.error("onSnapshot error:", err);
+          setFatalError(err.message || "Failed to load user data.");
+        }
+      );
+    } catch (err) {
+      console.error("Subscribe error:", err);
+      setFatalError(err.message || "Subscription failed.");
     }
-  }, []);
 
-  // Persist shifts to localStorage
+    return () => unsub && unsub();
+  }, [stateDocRef, user]);
+
+  // ---- Debounced autosave (doesn't rehydrate) ----
+  const queueSave = (payload) => {
+    if (!stateDocRef) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => {
+      try {
+        await setDoc(
+          stateDocRef,
+          { ...payload, updatedAt: serverTimestamp() },
+          { merge: true }
+        );
+        // we let snapshot update lastRemoteUpdatedAtRef; no need to re-set local state here
+      } catch (e) {
+        console.error("Auto-save error:", e);
+      }
+    }, 400);
+  };
+
   useEffect(() => {
-    localStorage.setItem("wageDetails", JSON.stringify(wageDetails));
+    queueSave({ wageDetails });
   }, [wageDetails]);
 
-  const handleFormChange = (field, val) => {
-    setForm((prev) => ({ ...prev, [field]: val }));
+  useEffect(() => {
+    queueSave({ form });
+  }, [form]);
+
+  // ---- Flush saves when leaving ----
+  const flushSaveNow = async () => {
+    if (!stateDocRef) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    try {
+      await setDoc(
+        stateDocRef,
+        { wageDetails, form, updatedAt: serverTimestamp() },
+        { merge: true }
+      );
+    } catch (e) {
+      console.error("flushSaveNow failed:", e);
+    }
   };
+
+  useEffect(() => {
+    const onBeforeUnload = () => flushSaveNow();
+    const onHide = () => {
+      if (document.visibilityState === "hidden") flushSaveNow();
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    document.addEventListener("visibilitychange", onHide);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      document.removeEventListener("visibilitychange", onHide);
+    };
+  }, [stateDocRef, wageDetails, form]);
+
+  // ---- Helpers ----
+  const handleFormChange = (field, val) => setForm((p) => ({ ...p, [field]: val }));
 
   const calculateDuration = (start, end) => {
     if (!start || !end) return 0;
     const [sH, sM] = start.split(":").map(Number);
     let [eH, eM] = end.split(":").map(Number);
-    if (eH < sH || (eH === sH && eM < sM)) eH += 24; // overnight
+    if (eH < sH || (eH === sH && eM < sM)) eH += 24;
     return (eH * 60 + eM - (sH * 60 + sM)) / 60;
   };
 
@@ -76,10 +184,10 @@ export default function Calculator() {
       dayName === "Saturday" ||
       (dayName === "Sunday" &&
         (!startTime || parseInt(startTime.split(":")[0], 10) < 6));
-    const r = isWeekend
+    const rate = isWeekend
       ? parseFloat(form.weekendRate || 0)
       : parseFloat(form.weekdayRate || 0);
-    return isNaN(r) ? 0 : r;
+    return isNaN(rate) ? 0 : rate;
   };
 
   const totals = useMemo(() => {
@@ -87,145 +195,159 @@ export default function Calculator() {
     let totalFuelCost = 0;
     let grandTotalWages = 0;
 
-    wageDetails.forEach((dayObj) => {
-      dayObj.shifts.forEach((shift) => {
+    wageDetails.forEach((day) => {
+      day.shifts.forEach((shift) => {
         if (shift.startTime && shift.endTime) {
-          const duration = calculateDuration(shift.startTime, shift.endTime);
-          const rate = getHourlyRate(dayObj.day, shift.startTime);
-          const earnings = duration * rate;
-          totalHours += duration;
+          const hrs = calculateDuration(shift.startTime, shift.endTime);
+          const rate = getHourlyRate(day.day, shift.startTime);
+          totalHours += hrs;
+          grandTotalWages += hrs * rate;
           if (shift.location === "Gosford") {
             totalFuelCost += parseFloat(form.fuelCost || 0);
           }
-          grandTotalWages += earnings;
         }
       });
     });
 
     const others = parseFloat(form.others || 0) || 0;
-    const taxAmount = parseFloat(form.taxAmount || 0) || 0;
-    grandTotalWages += totalFuelCost + others - taxAmount;
-    const grandTotalBeforeTax = grandTotalWages + taxAmount;
-    const closingAmount = parseFloat(form.closingAmount || 0) || 0;
-    const wagesLeftOver = closingAmount - grandTotalWages;
+    const tax = parseFloat(form.taxAmount || 0) || 0;
+    grandTotalWages += totalFuelCost + others - tax;
+    const grandBeforeTax = grandTotalWages + tax;
+    const closing = parseFloat(form.closingAmount || 0) || 0;
+    const leftover = closing - grandTotalWages;
 
     return {
       totalHours,
       totalFuelCost,
       others,
-      taxAmount,
-      grandTotalBeforeTax,
+      taxAmount: tax,
+      grandTotalBeforeTax: grandBeforeTax,
       grandTotalWages,
-      closingAmount,
-      wagesLeftOver,
+      closingAmount: closing,
+      wagesLeftOver: leftover,
     };
   }, [wageDetails, form]);
 
-  // Shift handlers
-  const toggleDay = (day, checked) => {
+  // ---- Shift handlers ----
+  const toggleDay = (day, checked) =>
     setWageDetails((prev) =>
-      prev.map((d) => {
-        if (d.day !== day) return d;
-        return {
-          ...d,
-          enabled: checked,
-          shifts: checked
-            ? d.shifts.length
-              ? d.shifts
-              : [{ startTime: null, endTime: null, location: "Gosford" }]
-            : d.shifts.map(() => ({
-                startTime: null,
-                endTime: null,
-                location: "Gosford",
-              })),
-        };
-      })
+      prev.map((d) =>
+        d.day === day
+          ? {
+              ...d,
+              enabled: checked,
+              shifts: checked
+                ? d.shifts.length
+                  ? d.shifts
+                  : [{ startTime: null, endTime: null, location: "Gosford" }]
+                : d.shifts.map(() => ({
+                    startTime: null,
+                    endTime: null,
+                    location: "Gosford",
+                  })),
+            }
+          : d
+      )
     );
-  };
 
-  const addShift = (day) => {
-    setWageDetails((prev) =>
-      prev.map((d) => {
-        if (d.day !== day) return d;
-        return {
-          ...d,
-          shifts: [
-            ...d.shifts,
-            { startTime: null, endTime: null, location: "Gosford" },
-          ],
-        };
-      })
+  const addShift = (day) =>
+    setWageDetails((p) =>
+      p.map((d) =>
+        d.day === day
+          ? {
+              ...d,
+              shifts: [
+                ...d.shifts,
+                { startTime: null, endTime: null, location: "Gosford" },
+              ],
+            }
+          : d
+      )
     );
-  };
 
-  const removeShift = (day, index) => {
-    setWageDetails((prev) =>
-      prev.map((d) => {
+  const removeShift = (day, i) =>
+    setWageDetails((p) =>
+      p.map((d) => {
         if (d.day !== day) return d;
         if (d.shifts.length <= 1) return d;
         const next = d.shifts.slice();
-        next.splice(index, 1);
+        next.splice(i, 1);
         return { ...d, shifts: next };
       })
     );
-  };
 
-  const updateShift = (day, index, field, value) => {
-    setWageDetails((prev) =>
-      prev.map((d) => {
+  const updateShift = (day, i, field, val) =>
+    setWageDetails((p) =>
+      p.map((d) => {
         if (d.day !== day) return d;
         const next = d.shifts.slice();
-        next[index] = { ...next[index], [field]: value };
+        next[i] = { ...next[i], [field]: val };
         return { ...d, shifts: next };
       })
     );
-  };
 
+  // ---- Actions ----
   const onCalculate = () => {
-    // use native form validation
     if (!formRef.current?.checkValidity()) {
       formRef.current?.reportValidity();
       return;
     }
+    hydratedRef.current = true; // keep local lead while modal open
     setModalOpen(true);
   };
 
-  const clearAll = () => {
-    setForm({
-      date: "",
-      employeeName: "",
-      employeeAddress: "",
-      weekdayRate: "",
-      weekendRate: "",
-      fuelCost: "",
-      others: "",
-      expenseExplanation: "",
-      taxAmount: "",
-      pouchDay: "",
-      pouchDate: "",
-      closingAmount: "",
-    });
-    localStorage.removeItem("wageDetails");
+  const clearAll = async () => {
+    setForm(initForm);
     setWageDetails(initWageDetails());
+    if (stateDocRef) {
+      await setDoc(
+        stateDocRef,
+        { form: initForm, wageDetails: initWageDetails(), updatedAt: serverTimestamp() },
+        { merge: true }
+      );
+      lastRemoteUpdatedAtRef.current = Date.now();
+    }
   };
 
   const onSavePdf = async () => {
     setShowOverlay(true);
     try {
+      if (user) {
+        await addDoc(collection(db, "submissions"), {
+          uid: user.uid,
+          date: form.date || null,
+          employeeName: form.employeeName || "",
+          employeeAddress: form.employeeAddress || "",
+          wageDetails,
+          totals,
+          createdAt: serverTimestamp(),
+        });
+      }
       await generatePdf(form, wageDetails, totals);
-      // After PDF: reset to original behavior
-      localStorage.removeItem("wageDetails");
-      setWageDetails(initWageDetails());
-      clearAll();
+      await clearAll();
       setModalOpen(false);
     } catch (e) {
       console.error(e);
-      alert("Failed to generate PDF.");
+      alert("Failed to generate/save PDF.");
     } finally {
       setShowOverlay(false);
     }
   };
 
+  // ---- Error fallback ----
+  if (fatalError) {
+    return (
+      <div className="container" style={{ padding: 24 }}>
+        <div className="card">
+          <h2>Couldn’t load your data</h2>
+          <p style={{ color: "crimson" }}>{fatalError}</p>
+          <p>Check Firestore rules and your connection.</p>
+        </div>
+      </div>
+    );
+  }
+
+  // ---- Render ----
   return (
     <div id="calculator-page" className="screen active" style={{ display: "block" }}>
       <div className="container">
@@ -237,10 +359,9 @@ export default function Calculator() {
             <h2>Employee Details</h2>
 
             <div className="form-group">
-              <label htmlFor="date">Date:</label>
+              <label>Date:</label>
               <input
                 type="date"
-                id="date"
                 required
                 value={form.date}
                 onChange={(e) => handleFormChange("date", e.target.value)}
@@ -248,10 +369,9 @@ export default function Calculator() {
             </div>
 
             <div className="form-group">
-              <label htmlFor="employee-name">Employee Name:</label>
+              <label>Employee Name:</label>
               <input
                 type="text"
-                id="employee-name"
                 required
                 value={form.employeeName}
                 onChange={(e) => handleFormChange("employeeName", e.target.value)}
@@ -259,10 +379,9 @@ export default function Calculator() {
             </div>
 
             <div className="form-group">
-              <label htmlFor="employee-address">Employee Address:</label>
+              <label>Employee Address:</label>
               <input
                 type="text"
-                id="employee-address"
                 value={form.employeeAddress}
                 onChange={(e) => handleFormChange("employeeAddress", e.target.value)}
               />
@@ -292,10 +411,9 @@ export default function Calculator() {
             <h2>Rates & Expenses</h2>
 
             <div className="form-group">
-              <label htmlFor="weekday-rate">Weekday Rate ($):</label>
+              <label>Weekday Rate ($):</label>
               <input
                 type="number"
-                id="weekday-rate"
                 step="0.01"
                 required
                 value={form.weekdayRate}
@@ -304,10 +422,9 @@ export default function Calculator() {
             </div>
 
             <div className="form-group">
-              <label htmlFor="weekend-rate">Weekend Rate ($):</label>
+              <label>Weekend Rate ($):</label>
               <input
                 type="number"
-                id="weekend-rate"
                 step="0.01"
                 required
                 value={form.weekendRate}
@@ -316,10 +433,9 @@ export default function Calculator() {
             </div>
 
             <div className="form-group">
-              <label htmlFor="fuel-cost">Fuel Cost per Day ($):</label>
+              <label>Fuel Cost per Day ($):</label>
               <input
                 type="number"
-                id="fuel-cost"
                 step="0.01"
                 required
                 value={form.fuelCost}
@@ -328,10 +444,9 @@ export default function Calculator() {
             </div>
 
             <div className="form-group">
-              <label htmlFor="others">Other Expenses ($):</label>
+              <label>Other Expenses ($):</label>
               <input
                 type="number"
-                id="others"
                 step="0.01"
                 value={form.others}
                 onChange={(e) => handleFormChange("others", e.target.value)}
@@ -339,9 +454,8 @@ export default function Calculator() {
             </div>
 
             <div className="form-group">
-              <label htmlFor="expense-explanation">Expense Explanation:</label>
+              <label>Expense Explanation:</label>
               <textarea
-                id="expense-explanation"
                 disabled={!form.others || form.others === "0"}
                 value={form.expenseExplanation}
                 onChange={(e) => handleFormChange("expenseExplanation", e.target.value)}
@@ -349,10 +463,9 @@ export default function Calculator() {
             </div>
 
             <div className="form-group">
-              <label htmlFor="tax-amount">Amount Transferred ($):</label>
+              <label>Amount Transferred ($):</label>
               <input
                 type="number"
-                id="tax-amount"
                 step="0.01"
                 required
                 value={form.taxAmount}
@@ -361,30 +474,27 @@ export default function Calculator() {
             </div>
 
             <div className="form-group">
-              <label htmlFor="pouch-day">Pouch Day:</label>
+              <label>Pouch Day:</label>
               <input
                 type="text"
-                id="pouch-day"
                 value={form.pouchDay}
                 onChange={(e) => handleFormChange("pouchDay", e.target.value)}
               />
             </div>
 
             <div className="form-group">
-              <label htmlFor="pouch-date">Pouch Date:</label>
+              <label>Pouch Date:</label>
               <input
                 type="date"
-                id="pouch-date"
                 value={form.pouchDate}
                 onChange={(e) => handleFormChange("pouchDate", e.target.value)}
               />
             </div>
 
             <div className="form-group">
-              <label htmlFor="closing-amount">Closing Amount ($):</label>
+              <label>Closing Amount ($):</label>
               <input
                 type="number"
-                id="closing-amount"
                 step="0.01"
                 required
                 value={form.closingAmount}
@@ -407,7 +517,6 @@ export default function Calculator() {
         <footer>Developed by Ezaz Ahmad | Version: 1.1.3V</footer>
       </div>
 
-      {/* Modal + Overlay */}
       <ResultModal
         open={modalOpen}
         data={{

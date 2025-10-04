@@ -1,17 +1,37 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
+import AuthProvider from "./context/AuthContext.jsx";
+import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import LandingPage from "./components/LandingPage.jsx";
 import Calculator from "./components/Calculator.jsx";
+import Login from "./components/Login.jsx";
+import LogoutButton from "./components/LogoutButton.jsx";
 
 export default function App() {
-  const [screen, setScreen] = useState("landing");
+  const [route, setRoute] = useState(window.location.hash || "#/");
 
   useEffect(() => {
-    // match original behavior: landing = no scroll, calculator = scroll
-    document.body.style.overflow = screen === "calculator" ? "auto" : "hidden";
-    return () => { document.body.style.overflow = "auto"; };
-  }, [screen]);
+    const onHash = () => setRoute(window.location.hash || "#/");
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
 
-  return screen === "landing"
-    ? <LandingPage onStart={() => setScreen("calculator")} />
-    : <Calculator />;
+  return (
+    <AuthProvider>
+      {route === "#/" && (
+        <LandingPage onStart={() => (window.location.hash = "#/login")} />
+      )}
+
+      {route === "#/login" && <Login />}
+
+      {route === "#/app" && (
+        <ProtectedRoute>
+          {/* optional small header with logout */}
+          <div style={{ display: "flex", justifyContent: "flex-end", padding: "12px 20px" }}>
+            <LogoutButton />
+          </div>
+          <Calculator />
+        </ProtectedRoute>
+      )}
+    </AuthProvider>
+  );
 }

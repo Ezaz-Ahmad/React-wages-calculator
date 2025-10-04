@@ -1,16 +1,78 @@
-# React + Vite
+# 🧮 React Wages Calculator
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A modern **Wages Calculator web app** built with **React + Vite**, designed to make employee wage calculation fast, accurate, and simple.  
+This project is a React translation of my earlier vanilla JS app — rebuilt with a modular structure, reusable components, and modern tooling.  
 
-Currently, two official plugins are available:
+🔗 **Live Demo:** [https://Ezaz-Ahmad.github.io/React-wages-calculator](https://Ezaz-Ahmad.github.io/React-wages-calculator)
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+---
 
-## React Compiler
+## 🚀 Features
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- **Landing Page → Calculator Flow**  
+  Clean intro page leading into the calculator screen.
 
-## Expanding the ESLint configuration
+- **Employee Information**  
+  Collects date, name, and optional address.
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+- **Work Schedule with Shifts**  
+  - Add/remove shifts dynamically for each day.  
+  - Enable/disable days with checkboxes.  
+  - Supports overnight shifts and multiple locations (Gosford, Islington, Adamstown).  
+  - Data persists via `localStorage`.
+
+- **Rates & Expenses**  
+  - Weekday vs Weekend rates.  
+  - Fuel cost per day.  
+  - Other expenses with explanation.  
+  - Amount transferred (tax).  
+  - Pouch day/date and closing balance.
+
+- **Wage Calculations**  
+  - Total hours worked.  
+  - Fuel & other expenses.  
+  - Gross and net wages (before/after transfer).  
+  - Remaining wages after closing balance.  
+
+- **Results Modal**  
+  - Displays breakdown of all wage data.  
+  - Export wages report to PDF.
+
+- **PDF Export**  
+  - Professionally formatted 2-page PDF using [pdf-lib](https://pdf-lib.js.org/).  
+  - Includes employee details, shift table, financial summary, and notes.  
+  - Auto-downloads report.
+
+- **Wave Overlay Loader**  
+  Animated overlay when generating PDFs.
+
+---
+
+## 🛠️ Tech Stack
+
+- [React 19](https://react.dev/) + [Vite](https://vite.dev/)
+- [pdf-lib](https://pdf-lib.js.org/) → PDF generation  
+- [LocalStorage](https://developer.mozilla.org/en-US/docs/Web/API/Window/localStorage) → client-side persistence  
+- CSS (custom animations + Poppins font)
+
+---
+
+## 📂 Project Structure
+
+src/
+├─ components/ # UI Components
+│ ├─ Calculator.jsx
+│ ├─ LandingPage.jsx
+│ ├─ ResultModal.jsx
+│ ├─ ShiftDay.jsx
+│ └─ WaveOverlay.jsx
+│
+├─ constants/ # Static values
+│ └─ days.js
+│
+├─ utils/ # Utility functions
+│ └─ pdf.js
+│
+├─ styles.css # Main stylesheet
+├─ App.jsx # App entry
+└─ main.jsx # React bootstrap
